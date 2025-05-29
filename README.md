@@ -33,13 +33,7 @@ Livebook convierte Elixir en una herramienta visual, interactiva y perfecta para
 
 ## 🙌 Contribuciones
 
-¿Quieres aportar tu ejemplo? ¡Adelante! Haz un fork y abre un PR con tu notebook o contactarme directamente y colaborar para seguir aprendiendo.
-
----
-
-## 📸 Preview
-
-> Puedes generar capturas o gifs para añadir una sección visual aquí que los usuarios vean al entrar al repo.
+¿Quieres aportar tu ejemplo? ¡Adelante! Haz un fork y abre un PR con tu notebook o contáctame directamente para colaborar y seguir aprendiendo.
 
 ---
 
