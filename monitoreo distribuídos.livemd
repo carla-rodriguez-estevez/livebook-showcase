@@ -1,0 +1,228 @@
+# Monitoreo distribuido en tiempo real con Elixir: Control de una constelación de satélites
+
+```elixir
+Mix.install([
+  {:kino, "~> 0.12"},
+  {:vega_lite, "~> 0.1.11"},
+  {:kino_vega_lite, "~> 0.1.8"}
+])
+```
+
+## Concepto
+
+Vamos a simular una red de satélites orbitando la Tierra, donde cada satélite es un proceso que transmite métricas (temperatura del núcleo, señal, posición orbital, batería...). El sistema podrá:
+
+Visualizar cada satélite en un mapa 2D del globo con coordenadas.
+
+Mostrar su estado vital (con color verde/amarillo/rojo según anomalías).
+
+Supervisar y reiniciar satélites caídos (simulación de fallos).
+
+Producir logs y alertas visuales de comportamiento anómalo.
+
+Incluir una vista tipo "sala de control" para ver todo en tiempo real.
+
+<!-- livebook:{"break_markdown":true} -->
+
+🛰️ Monitoreo distribuido en tiempo real con Elixir
+
+**¿Qué veremos?**  
+Simularemos una constelación de satélites orbitando y enviando telemetría en tiempo real. Cada satélite será un proceso concurrente, y visualizaremos en Livebook su estado y posición.
+
+Este proyecto demostrará el poder de Elixir para sistemas de monitoreo distribuidos, altamente concurrentes, con una interfaz visual e interactiva.
+
+## Monitor central
+
+Recibe todos los datos y actualiza un `Kino.Frame` con la telemetría en tiempo real.
+
+```elixir
+defmodule Monitor do
+  use GenServer
+
+  def start_link(_) do
+    GenServer.start_link(__MODULE__, %{data: []}, name: __MODULE__)
+  end
+
+  def receive_data(id, data) do
+    GenServer.cast(__MODULE__, {:nuevo_dato, id, data})
+  end
+
+  def init(state) do
+    {:ok, Map.put(state, :frame, Kino.Frame.new())}
+  end
+
+  def handle_cast({:nuevo_dato, id, data}, state) do
+    new_data = [%{id: id, data: data} | state.data] |> Enum.take(50)
+
+    markdown =
+      new_data
+      |> Enum.map(fn %{id: id, data: data} ->
+        "- **#{id}** - Pos: (#{elem(data.position, 0)}, #{elem(data.position, 1)}), Temp: #{data.temperature}°C, ⚡ #{data.battery}%"
+      end)
+      |> Enum.join("\n")
+
+    Kino.Frame.clear(state.frame)
+    Kino.Frame.append(state.frame, Kino.Markdown.new("""
+    ### 📡 Telemetría de satélites (últimos datos):
+    #{markdown}
+    """))
+
+    {:noreply, %{state | data: new_data}}
+  end
+end
+
+{:ok, monitor_pid} = Monitor.start_link(nil)
+
+monitor_pid |> :sys.get_state() |> Map.get(:frame)
+
+```
+
+## Representación de la constelación
+
+Vamos a modelar 10 satélites como procesos GenServer que mandan datos periódicamente. Estos datos se centralizan en un proceso de monitoreo que los agrupa y visualiza.
+
+```elixir
+defmodule Satelite do
+  use GenServer
+
+  def start_link(id) do
+    GenServer.start_link(__MODULE__, %{id: id}, name: via(id))
+  end
+
+  defp via(id), do: {:via, Registry, {:satelites, id}}
+
+  def init(state) do
+    send(self(), :emitir)
+    {:ok, Map.put(state, :data, [])}
+  end
+
+  def handle_info(:emitir, state) do
+    data = %{
+      timestamp: DateTime.utc_now(),
+      position: {Enum.random(0..100), Enum.random(0..100)},
+      temperature: :rand.uniform(50) + 10,
+      battery: Enum.random(30..100)
+    }
+
+    Monitor.receive_data(state.id, data)
+    Process.send_after(self(), :emitir, 1000)
+    {:noreply, %{state | data: [data | state.data] |> Enum.take(10)}}
+  end
+
+  def handle_call(:get_data, _from, state) do
+    {:reply, state.data, state}
+  end
+
+end
+
+```
+
+## Iniciar la constelación
+
+```elixir
+{:ok, _} = Registry.start_link(keys: :unique, name: :satelites)
+
+for id <- 1..10 do
+  Satelite.start_link("SAT-#{id}")
+end
+
+```
+
+## Visualización gráfica de posiciones
+
+Mostrar las posiciones en un gráfico VegaLite animado y real.
+
+```elixir
+graph_data = Kino.DataTable.new([])
+
+frame_posiciones = Kino.Frame.new()
+Kino.render(frame_posiciones)
+
+posicion_fn = fn ->
+  data =
+    :satelites
+    |> Registry.select([{{:"$1", :_, :_}, [], [:"$1"]}])
+    |> Enum.map(fn id ->
+      [last | _] = GenServer.call({:via, Registry, {:satelites, id}}, :get_data)
+      %{id: id, x: elem(last.position, 0), y: elem(last.position, 1)}
+    end)
+
+  vl =
+    VegaLite.new()
+    |> VegaLite.data_from_values(data)
+    |> VegaLite.encode_field(:x, "x")
+    |> VegaLite.encode_field(:y, "y")
+    |> VegaLite.encode_field(:text, "id")
+    |> VegaLite.mark(:circle)
+    |> then(fn vl ->                # Aumentar tamaño del gráfico
+    %{vl | spec: Map.merge(vl.spec, %{"width" => 1000, "height" => 500})}
+  end)
+
+  Kino.Frame.clear(frame_posiciones)
+  Kino.Frame.append(frame_posiciones, Kino.VegaLite.new(vl))
+end
+
+:timer.send_interval(2000, self(), :update_graph)
+
+receive do
+  :update_graph -> posicion_fn.()
+end
+
+```
+
+## Interacción: inspeccionar un satélite
+
+Permitir elegir un satélite y ver sus últimos datos.
+
+```elixir
+opciones = Enum.map(1..10, &{"SAT-#{&1}", "Satélite #{&1}"})
+selector = Kino.Input.select("Selecciona un satélite", opciones)
+
+Kino.render(selector)
+
+detalle = Kino.Frame.new()
+Kino.render(detalle)
+
+Kino.listen(selector, fn %{value: id} ->
+  IO.puts("🔘 Botón presionado")
+
+  #id = Kino.Input.get(selector)
+  IO.puts("Click #{id}")
+
+  case GenServer.call({:via, Registry, {:satelites, id}}, :get_data) do
+     datos  ->
+      resumen =
+        datos
+        |> Enum.map(fn d ->
+          "- #{d.timestamp} → Temp: #{d.temperature}°C, ⚡ #{d.battery}%, Pos: #{inspect(d.position)}"
+        end)
+        |> Enum.join("\n")
+
+      #IO.puts("Click #{resumen}")
+
+      Kino.Frame.clear(detalle)
+
+      Kino.Frame.append(detalle, Kino.Markdown.new("""
+      ### 📄 Historial de `#{id}`
+
+      #{resumen}
+      """))
+
+    _ ->
+      Kino.Frame.clear(detalle)
+      Kino.Frame.append(detalle, Kino.Markdown.new("❌ No se encontró el satélite `#{id}`."))
+  end
+end)
+
+```
+
+## ✅ Conclusión
+
+Hemos creado una simulación distribuida en Elixir que:
+
+* Lanza múltiples procesos representando satélites.
+* Cada uno reporta su estado periódicamente.
+* Un monitor central coordina y visualiza sus datos.
+* Livebook sirve como panel visual interactivo.
+
+🚀 ¡Este es solo el comienzo! Podrías conectar sensores reales, simular fallos, o exportar la telemetría como métricas Prometheus.

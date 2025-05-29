@@ -1,0 +1,256 @@
+# Livebook para pruebas interactivas de APIs 🚀
+
+```elixir
+Mix.install([
+  :req,
+  :kino,
+  {:vega_lite, "~> 0.1.10"},
+   {:kino_vega_lite, "~> 0.1.9"},
+  :jason
+])
+```
+
+## Propósito
+
+Este Livebook te permite explorar y probar APIs REST externas directamente desde Livebook, de forma interactiva y visual.
+
+Aprenderás a:
+
+* Hacer peticiones HTTP (`GET`, `POST`) con `Req`.
+* Usar formularios interactivos con `Kino.Control`.
+* Mostrar resultados de forma clara con `Kino.Markdown`, `Kino.DataTable` y `Kino.JSON`.
+
+```elixir
+
+```
+
+Usaremos la API pública de JSONPlaceholder para hacer pruebas:
+
+* `GET https://jsonplaceholder.typicode.com/posts` (listar publicaciones)
+* `GET https://jsonplaceholder.typicode.com/posts/:id` (ver una publicación)
+* `POST https://jsonplaceholder.typicode.com/posts` (crear una publicación — simulada)
+
+## Gráfica en tiempo real de peticiones
+
+##### ¿Qué se busca mostrar?
+
+Una gráfica de barras que refleje dinámicamente cuántas peticiones de tipo GET y POST ha hecho el usuario durante la sesión, y que se actualice conforme se usan los botones.
+
+```elixir
+# Agente para contar las peticiones
+unless Process.whereis(:contador_peticiones) do
+  Agent.start_link(fn -> %{"GET" => 0, "POST" => 0} end, name: :contador_peticiones)
+end
+
+# Frame para la gráfica
+grafica_frame = Kino.Frame.new()
+Kino.render(grafica_frame)
+
+# Función para actualizar la gráfica
+actualizar_grafica = fn ->
+  datos = Agent.get(:contador_peticiones, fn mapa ->
+    [
+      %{tipo: "GET", total: mapa["GET"]},
+      %{tipo: "POST", total: mapa["POST"]}
+    ]
+  end)
+
+  vl =
+    VegaLite.new()
+    |> VegaLite.data_from_values(datos)
+    |> VegaLite.mark(:bar)
+    |> VegaLite.encode_field(:x, "tipo", type: :nominal)
+    |> VegaLite.encode_field(:y, "total", type: :quantitative)
+    |> then(fn vl ->                # Aumentar tamaño del gráfico
+    %{vl | spec: Map.merge(vl.spec, %{"width" => 1000, "height" => 500})}
+  end)
+
+  Kino.Frame.render(grafica_frame, Kino.VegaLite.new(vl))
+end
+
+# Llamamos una vez para inicializar
+actualizar_grafica.()
+
+```
+
+## Prueba interactiva de endpoints GET
+
+Esto crea un formulario interactivo donde el usuario puede cambiar el ID del post y ver automáticamente el contenido del post en formato JSON.
+
+````elixir
+form =
+  Kino.Control.form([
+    id: Kino.Input.number("ID del post", default: 1)
+  ], submit: "Obtener post")
+
+Kino.render(form)
+frame = Kino.Frame.new()
+Kino.render(frame)
+
+Kino.listen(form, fn %{data: %{id: id}} ->
+  base_url = "https://jsonplaceholder.typicode.com/posts/#{id}"
+
+  case Req.get(base_url) do
+    {:ok, res} ->
+      # Limpiamos el contenido anterior del frame
+      Kino.Frame.clear(frame)
+
+      # Agregamos el nuevo resultado
+      Kino.Frame.append(frame,
+        Kino.Markdown.new("""
+        ### ✅ Resultado del GET
+
+        ```json
+        #{Jason.encode!(res.body, pretty: true)}
+        ```
+        """)
+      )
+            
+      Agent.update(:contador_peticiones, fn mapa ->
+        Map.update!(mapa, "GET", &(&1 + 1))
+      end)
+
+      actualizar_grafica.()
+      
+
+    {:error, reason} ->
+      Kino.Frame.clear(frame)
+      Kino.Frame.append(frame,
+        Kino.Markdown.new("**Error:** #{inspect(reason)}")
+      )
+  end
+end)
+
+
+
+````
+
+## Prueba de POST — Crear una publicación simulada
+
+````elixir
+base_url = "https://jsonplaceholder.typicode.com/posts"
+
+post_form =
+  Kino.Control.form([
+    userId: Kino.Input.number("ID del usuario", default: 1),
+    title: Kino.Input.text("Título del post", default: "Ejemplo"),
+    body: Kino.Input.textarea("Contenido", default: "Texto del post")
+  ], submit: "Crear post")
+
+Kino.render(post_form)
+
+
+post_frame = Kino.Frame.new()
+Kino.render(post_frame)
+
+Kino.listen(post_form, fn %{data: %{userId: user_id, title: title, body: body}} ->
+  url = "https://jsonplaceholder.typicode.com/posts"
+
+  body = %{
+    "userId" => user_id,
+    "title" => title,
+    "body" => body
+  }
+
+  headers = [{"Content-Type", "application/json"}]
+
+  case Req.post(url, json: body, headers: headers) do
+    {:ok, res} ->
+      Kino.Frame.clear(post_frame)
+
+      Kino.Frame.append(post_frame,
+        Kino.Markdown.new("""
+        ### ✅ Resultado del POST
+
+        ```json
+        #{Jason.encode!(res.body, pretty: true)}
+        ```
+        """)
+      )
+      
+      Agent.update(:contador_peticiones, fn mapa ->
+        Map.update!(mapa, "POST", &(&1 + 1))
+      end)
+
+      actualizar_grafica.()
+
+
+    {:error, reason} ->
+      Kino.Frame.clear(post_frame)
+
+      Kino.Frame.append(post_frame,
+        Kino.Markdown.new("**Error al crear post:** #{inspect(reason)}")
+      )
+  end
+end)
+
+
+````
+
+## Bonus: Mostrar lista completa como tabla
+
+```elixir
+{:ok, %Req.Response{body: posts}} =
+  Req.get("https://jsonplaceholder.typicode.com/posts")
+
+Kino.DataTable.new(posts)
+```
+
+## Automatización (peticiones cada X segundos)
+
+````elixir
+auto_frame = Kino.Frame.new()
+Kino.render(auto_frame)
+
+Kino.listen(3000, fn _ ->
+  id = Enum.random(1..10)
+  url = "https://jsonplaceholder.typicode.com/posts/#{id}"
+
+  case Req.get(url) do
+    {:ok, res} ->
+      Kino.Frame.render(auto_frame, Kino.Markdown.new("""
+      ### 🔄 Auto GET (ID #{id})
+      ```json
+      #{Jason.encode!(res.body, pretty: true)}
+      ```
+      """))
+
+    _ -> :noop
+  end
+end)
+
+````
+
+## Simulador de errores
+
+````elixir
+form_url =
+  Kino.Control.form([
+    url: Kino.Input.text("URL personalizada", default: "https://jsonplaceholder.typicode.com/404")
+  ], submit: "Probar")
+
+frame_error = Kino.Frame.new()
+Kino.render(form_url)
+Kino.render(frame_error)
+
+Kino.listen(form_url, fn %{data: %{url: url}} ->
+  case Req.get(url) do
+    {:ok, res} ->
+      Kino.Frame.render(frame_error, Kino.Markdown.new("""
+      ✅ Respuesta inesperadamente correcta
+      ```json
+      #{Jason.encode!(res.body, pretty: true)}
+      ```
+      """))
+
+    {:error, reason} ->
+      Kino.Frame.render(frame_error, Kino.Markdown.new("""
+      ❌ Error esperado
+      ```
+      #{inspect(reason)}
+      ```
+      """))
+  end
+end)
+
+````

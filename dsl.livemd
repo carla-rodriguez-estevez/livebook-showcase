@@ -1,0 +1,284 @@
+# Crea tu DSL con Elixir
+
+```elixir
+Mix.install([
+  :kino,
+  :vega_lite,
+  {:kino_vega_lite, "~> 0.1.8"}
+])
+```
+
+## Introducción: ¿Qué es un DSL?
+
+Un **DSL (Domain Specific Language)** es un lenguaje pequeño, diseñado para expresar conceptos de un dominio específico de forma clara y concisa.
+
+En este Livebook construiremos paso a paso un DSL con Elixir para describir escenarios narrativos interactivos, como los de un motor de novela visual o aventura conversacional.
+
+## Objetivo del DSL
+
+Queremos lograr una sintaxis como esta:
+
+```
+escenario "Bosque" do
+  texto "Te adentras en un bosque oscuro."
+  opcion "Explorar el sendero", va: "Sendero"
+  opcion "Volver", va: "Pueblo"
+end
+```
+
+Esto debe traducirse en estructuras que puedan interpretarse, visualizarse o ejecutarse como parte de una historia.
+
+## Definición de estructuras base
+
+```elixir
+defmodule DSL do
+  defstruct nombre: nil, texto: nil, opciones: []
+end
+
+defmodule Opcion do
+  defstruct texto: nil, va: nil
+end
+```
+
+## Macros para el DSL
+
+```elixir
+defmodule DSL.Macro do
+  defmacro escenario(nombre, do: bloque) do
+    quote do
+      DSL.Builder.iniciar_escenario(unquote(nombre))
+      unquote(bloque)
+      DSL.Builder.obtener_escenario()
+    end
+  end
+
+  defmacro texto(linea) do
+    quote do
+      DSL.Builder.set_texto(unquote(linea))
+    end
+  end
+
+  defmacro opcion(titulo, va: destino) do
+    quote do
+      DSL.Builder.agregar_opcion(%Opcion{texto: unquote(titulo), va: unquote(destino)})
+    end
+  end
+end
+```
+
+## Builder acumulador
+
+```elixir
+defmodule DSL.Builder do
+  use Agent
+
+  def iniciar_escenario(nombre) do
+    Agent.start_link(fn -> %DSL{nombre: nombre} end, name: __MODULE__)
+  end
+
+  def set_texto(txt), do: Agent.update(__MODULE__, &%{&1 | texto: txt})
+
+  def agregar_opcion(op), do: Agent.update(__MODULE__, fn esc ->
+    %{esc | opciones: esc.opciones ++ [op]}
+  end)
+
+  def obtener_escenario, do: Agent.get(__MODULE__, & &1)
+end
+```
+
+## Probando el DSL
+
+```elixir
+import DSL.Macro
+
+escenario "BosquePrueba" do
+  texto "Te adentras en un bosque luminoso y tienes un campo de futbol delante."
+  opcion "Explorar el campo de futbol", va: "Campo de fútbol"
+  opcion "Volver a casa", va: "Casa"
+end
+```
+
+## Visualización en Kino
+
+```elixir
+esc = DSL.Builder.obtener_escenario()
+
+Kino.Markdown.new("""
+## 🌳 Escenario: #{esc.nombre}
+
+📜 *#{esc.texto}*
+
+**Opciones disponibles:**
+#{Enum.map_join(esc.opciones, "\n", fn op -> "- [#{op.texto} ➞ #{op.va}]" end)}
+""")
+```
+
+## Ampliamos
+
+Vamos a extender la Livebook con una demostración más completa, que muestre la utilidad real del DSL como motor narrativo, incluyendo:
+
+🔁 Múltiples escenarios conectados (incluyendo el que ya hemos creado)
+
+🎮 Navegación interactiva con Kino.Input
+
+🧠 Estado del jugador (vida, inventario, etc.)
+
+🗺️ Mapa dinámico de la historia
+
+## Escenarios múltiples conectados
+
+```elixir
+escenarios = %{
+  "Bosque" =>
+    escenario "Bosque" do
+      texto "Te adentras en un bosque oscuro."
+      opcion "Explorar el sendero", va: "Sendero"
+      opcion "Volver", va: "Pueblo"
+    end,
+
+  "Sendero" =>
+    escenario "Sendero" do
+      texto "Encuentras huellas extrañas en el barro."
+      opcion "Seguir las huellas", va: "Cueva"
+      opcion "Regresar", va: "Bosque"
+    end,
+
+  "Pueblo" =>
+    escenario "Pueblo" do
+      texto "Estás en el pueblo abandonado. Todo está en silencio."
+      opcion "Entrar a la taberna", va: "Taberna"
+      opcion "Ir al bosque", va: "Bosque"
+    end,
+
+  "Cueva" =>
+    escenario "Cueva" do
+      texto "La cueva está oscura y escuchas un rugido."
+      opcion "Huir", va: "Bosque"
+    end,
+
+  "Taberna" =>
+    escenario "Taberna" do
+      texto "Dentro de la taberna hay una nota misteriosa en la barra."
+      opcion "Leer la nota", va: "Final"
+    end,
+
+  "Final" =>
+    escenario "Final" do
+      texto "¡Has descubierto el secreto del pueblo!"
+    end
+}
+
+```
+
+## Estado inicial del jugador
+
+```elixir
+estado_inicial = %{ubicacion: "Bosque", vida: 10, inventario: []}
+
+# Guardamos en un Agent
+defmodule EstadoJugador do
+  use Agent
+  def start_link(init \\ %{}), do: Agent.start_link(fn -> init end, name: __MODULE__)
+  def get, do: Agent.get(__MODULE__, & &1)
+  def update(fun), do: Agent.update(__MODULE__, fun)
+  def set_estado(est), do: Agent.update(__MODULE__, fn _ -> est end)
+end
+
+EstadoJugador.start_link(estado_inicial)
+
+```
+
+## Interfaz de navegación interactiva
+
+```elixir
+defmodule Navegador do
+  import Kino.Input
+
+  def mostrar_escenario(escenario) do
+    Kino.Markdown.new("""
+    ## 📍 Ubicación: #{escenario.nombre}
+    **🧾 #{escenario.texto}**
+
+    Opciones:
+    #{Enum.map_join(escenario.opciones, "\n", fn op -> "- #{op.texto}" end)}
+    """)
+  end
+
+  def interactuar(escenarios) do
+    estado = EstadoJugador.get()
+    #IO.puts(estado)
+    
+    actual = escenarios[estado.ubicacion]
+
+    #IO.puts(actual)
+
+    mostrar_escenario(actual)
+
+    opciones = actual.opciones
+                |> Enum.map(fn op -> {op.va, op.va} end)
+
+    selector = Kino.Input.select("Elige tu acción", opciones)
+
+    Kino.render(selector)
+
+    Kino.listen(selector, fn selected ->
+      #IO.puts(selected)
+      EstadoJugador.update(&Map.put(&1, :ubicacion, selected.value))
+      interactuar(escenarios)  # Recursivo
+    end)
+  end
+end
+
+# Ejecutar:
+Navegador.interactuar(escenarios)
+
+```
+
+## Vida, inventario y más
+
+Agrega al texto del escenario dinámicamente:
+
+```elixir
+defmodule Navegador2 do
+  import Kino.Input
+
+  def mostrar_escenario(escenario) do
+    estado = EstadoJugador.get()
+  
+    Kino.Markdown.new("""
+    ## 📍 Ubicación: #{escenario.nombre}
+    **🧾 #{escenario.texto}**
+  
+    🧠 Estado:
+    - Vida: #{estado.vida}
+    - Inventario: #{Enum.join(estado.inventario, ", ") || "vacío"}
+  
+    Opciones:
+    #{Enum.map_join(escenario.opciones, "\n", fn op -> "- #{op.texto}" end)}
+    """)
+  end
+
+  def interactuar(escenarios) do
+    estado = EstadoJugador.get()
+    actual = escenarios[estado.ubicacion]
+
+    mostrar_escenario(actual)
+
+    opciones = actual.opciones
+                |> Enum.map(fn op -> {op.va, op.va} end)
+
+    selector = Kino.Input.select("Elige tu acción", opciones)
+    Kino.render(selector)
+
+    Kino.listen(selector, fn selected ->
+      EstadoJugador.update(&Map.put(&1, :ubicacion, selected.value))
+      interactuar(escenarios)  # Recursivo
+    end)
+  end
+end
+
+# Ejecutar:
+Navegador2.interactuar(escenarios)
+
+
+```

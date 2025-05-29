@@ -1,0 +1,287 @@
+# Simulador de microservicios
+
+```elixir
+Mix.install([
+  :kino,
+  :vega_lite,
+  {:kino_vega_lite, "~> 0.1.8"}
+])
+```
+
+## Simulador de Microservicios con Fallos Controlados
+
+Simular una red de microservicios que se comunican entre sí bajo condiciones controladas de error (latencias, caídas parciales, timeouts, errores aleatorios), y observar cómo se comportan, se recuperan o fallan según diferentes estrategias funcionales.
+
+-> Usamos este entorno para aprender sobre:
+
+-> Supervisión y fallos
+
+-> Retries funcionales
+
+-> Circuit breakers
+
+-> Fallbacks
+
+-> Análisis visual de redes resilientes
+
+## Estructura de Microservicios Simulada
+
+<!-- Learn more at https://mermaid-js.github.io/mermaid -->
+
+```mermaid
+graph TD;
+  Servicio_A<-->Servicio_B;
+  Servicio_A<-->Servicio_C;
+  Servicio_B<-->Servicio_D;
+  Servicio_C<-->Servicio_D;
+```
+
+<!-- livebook:{"break_markdown":true} -->
+
+Cada servicio se comporta como un proceso Elixir con una función handle/1, y puede:
+
+* Procesar correctamente
+
+* Fallar con cierta probabilidad
+
+* Tener latencia
+
+* Devolver errores intermitentes
+
+## Código base
+
+```elixir
+defmodule VisualizadorFlujo do
+  use Agent
+
+  def start_link(_), do: Agent.start_link(fn -> [] end, name: __MODULE__)
+
+  def log(etiqueta), do: Agent.update(__MODULE__, fn log -> log ++ [etiqueta] end)
+
+  def obtener_log(), do: Agent.get(__MODULE__, & &1)
+
+  def reiniciar(), do: Agent.update(__MODULE__, fn _ -> [] end)
+end
+
+# Inicializar una vez
+VisualizadorFlujo.start_link(nil)
+```
+
+```elixir
+defmodule Servicio do
+  use GenServer
+
+  def start_link(nombre, opts \\ []), do:
+    GenServer.start_link(__MODULE__, opts, name: via(nombre))
+
+  def call(nombre, entrada), do:
+    GenServer.call(via(nombre), {:procesar, entrada}, 1000)
+
+  defp via(nombre), do: {:via, Registry, {:servicios, nombre}}
+
+  def init(opts) do
+    estado = %{
+      nombre: opts[:nombre],
+      error_rate: opts[:error_rate] || 0.1,
+      delay_ms: opts[:delay_ms] || 0,
+      fn: opts[:fn]
+    }
+    {:ok, estado}
+  end
+
+  def handle_call({:procesar, entrada}, _from, estado) do
+  VisualizadorFlujo.log("📩 #{estado.nombre} recibió: #{inspect(entrada)}")
+
+  Process.sleep(estado.delay_ms)
+
+  if :rand.uniform() < estado.error_rate do
+    VisualizadorFlujo.log("❌ #{estado.nombre} falló")
+    {:reply, {:error, :fallo_simulado}, estado}
+  else
+    resultado = estado.fn.(entrada)
+    VisualizadorFlujo.log("✅ #{estado.nombre} respondió: #{inspect(resultado)}")
+    {:reply, {:ok, resultado}, estado}
+  end
+end
+end
+
+```
+
+```elixir
+# Arrancar el Registry
+if is_nil(Process.whereis(:servicios)) do
+  {:ok, _} = Registry.start_link(keys: :unique, name: :servicios)
+end
+
+
+# Arrancar servicios
+Servicio.start_link(:d, nombre: :d, fn: &("D(#{&1})"))
+Servicio.start_link(:c, nombre: :c, fn: fn entrada ->
+  case Servicio.call(:d, "desde C") do
+    {:ok, res} -> "C(#{res})"
+    _ -> "C(ERROR)"
+  end
+end)
+
+Servicio.start_link(:b, nombre: :b, fn: fn entrada ->
+  case Servicio.call(:d, "desde B") do
+    {:ok, res} -> "B(#{res})"
+    _ -> "B(ERROR)"
+  end
+end)
+
+Servicio.start_link(:a, nombre: :a, fn: fn entrada ->
+  case {Servicio.call(:b, entrada), Servicio.call(:c, entrada)} do
+    {{:ok, b}, {:ok, c}} -> "A(#{b} + #{c})"
+    _ -> "A(FALLO)"
+  end
+end)
+
+```
+
+## Simulación de una petición compuesta
+
+Simulemos una petición a `Servicio A`, que hace una cadena de llamadas al resto. Si algo falla, queremos ver cómo se comporta el sistema
+
+```elixir
+
+Servicio.call(:a, "inicio")
+```
+
+```elixir
+# Inicializamos el registro solo si no está ya registrado
+unless Process.whereis(:servicios) do
+  {:ok, _} = Registry.start_link(keys: :unique, name: :servicios)
+end
+
+# Helpers para desenrollar respuestas y componer
+defmodule Helpers do
+  def unwrap({:ok, val}), do: val
+  def unwrap(_), do: "FALLO"
+
+  def merge(_entrada) do
+    case {Servicio.call(:b, "→"), Servicio.call(:c, "→")} do
+      {{:ok, b}, {:ok, c}} -> "A(#{b} + #{c})"
+      _ -> "FALLO EN A"
+    end
+  end
+end
+
+# Arrancamos los servicios (en orden para que dependencias estén listas)
+{:ok, _} = Servicio.start_link(:d, nombre: :d, fn: fn entrada -> "D(#{entrada})" end)
+
+{:ok, _} = Servicio.start_link(:c, nombre: :c, fn: fn _entrada ->
+  Helpers.unwrap(Servicio.call(:d, "desde C"))
+end)
+
+{:ok, _} = Servicio.start_link(:b, nombre: :b, fn: fn _entrada ->
+  Helpers.unwrap(Servicio.call(:d, "desde B"))
+end)
+
+{:ok, _} = Servicio.start_link(:a, nombre: :a, fn: &Helpers.merge/1)
+
+```
+
+## Visualización del flujo de ejecución
+
+Creamos un visualizador tipo trazado de flujo de llamadas, que muestra si cada servicio:
+
+```elixir
+defmodule Visual do
+  def mostrar_resultado(:ok, dato), do: "🟢 #{dato}"
+  def mostrar_resultado(:error, _), do: "🔴 ERROR"
+end
+```
+
+#### Visualizador animado
+
+````elixir
+defmodule VisualizadorAnimado do
+  def mostrar_flujo_animado() do
+    log = VisualizadorFlujo.obtener_log()
+
+    frame = Kino.Frame.new()
+    Kino.render(frame)
+
+    mostrar_pasos(frame, log, [])
+  end
+
+  defp mostrar_pasos(_frame, [], _acumulado), do: :ok
+
+  defp mostrar_pasos(frame, [paso | resto], acumulado) do
+    nuevo_log = acumulado ++ [paso]
+
+    Kino.Frame.render(frame, Kino.Markdown.new("""
+    ### 🔁 Flujo de Ejecución
+    
+    ```
+    #{Enum.join(nuevo_log, "\n")}
+    ```
+    """))
+
+    Process.sleep(800)
+    mostrar_pasos(frame, resto, nuevo_log)
+  end
+end
+
+````
+
+```elixir
+VisualizadorFlujo.reiniciar()
+Servicio.call(:a, "inicio")
+VisualizadorAnimado.mostrar_flujo_animado()
+
+```
+
+## Simulación visual de muchos ciclos
+
+Creamos una visualización que muestre:
+
+* Latencias por servicio
+
+* Tasa de errores
+
+* Circuitos abiertos
+
+* Recuperaciones exitosas
+
+```elixir
+ciclos = Kino.Input.number("Número de ciclos a simular", default: 10, min: 1)
+estrategia = Kino.Input.select("Estrategia de resiliencia", [{1, "Reintento simple"}, {2, "Plan de reserva"}])
+
+Kino.render(ciclos)
+Kino.render(estrategia)
+
+num_ciclos = Kino.Input.read(ciclos)
+estrategia_seleccionada = Kino.Input.read(estrategia)
+
+```
+
+```elixir
+frame = Kino.Frame.new() |> tap(&Kino.render/1)
+```
+
+```elixir
+defp convertir_a_estrategia("Reintento simple"), do: :retry
+defp convertir_a_estrategia("Plan de reserva"), do: :fallback
+
+```
+
+```elixir
+Enum.each(1..ciclos, fn ciclo ->
+  VisualizadorFlujo.reiniciar()
+
+  resultado = ClienteResiliente.llamar(:a, "inicio", convertir_a_estrategia(estrategia))
+
+  log = VisualizadorFlujo.obtener_log()
+
+  output = """
+  ### 🔄 Ciclo #{ciclo}
+  #{Enum.join(log, "\n")}
+  """
+
+Kino.Frame.append(frame, Kino.Markdown.new(output))
+Process.sleep(1000)
+end)
+
+```

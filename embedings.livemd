@@ -1,0 +1,206 @@
+# Inteligencia Artificial Funcional: Embeddings en Elixir
+
+```elixir
+Mix.install([
+  :req,
+  :kino,
+  {:nx, "~> 0.6.2"},
+  {:vega_lite, "~> 0.1.10"},
+   {:kino_vega_lite, "~> 0.1.9"},
+  :jason
+])
+```
+
+## ¿Qué son los embeddings?
+
+Un embedding es una representación numérica de un objeto (como una palabra o frase) en un espacio vectorial. Dos objetos con significado similar estarán cerca en ese espacio. Esto permite operar con texto de forma matemática.
+
+📌 Objetivos de esta sección:
+
+Explicar qué son los embeddings.
+
+Justificar su uso en Elixir.
+
+Cargar y preparar embeddings pre-entrenados
+
+#### 🔎 ¿Por qué embeddings?
+
+Los modelos de machine learning no entienden directamente palabras. Necesitamos transformar el lenguaje a números que capturen su significado.  
+Los embeddings hacen justo eso.
+
+Un ejemplo simple:
+
+* "gato" y "perro" deberían estar cerca
+* "gato" y "avión" deberían estar lejos
+
+Trabajaremos con Elixir para manipular estos vectores de forma funcional.
+
+## Cargando modelos preentrenados
+
+Usaremos embeddings generados previamente (por ejemplo, con BERT, OpenAI o FastText) y los cargaremos en Elixir como un mapa con claves de texto y valores vectoriales.
+
+Podemos descargar un JSON pequeño con ejemplos.
+
+En este ejemplo, usamos un archivo local mini_glove.json que contiene vectores predefinidos para algunas palabras. Esto simula cómo se trabajan los embeddings en tareas reales, pero evitando peticiones a servidores como Hugging Face.
+
+```elixir
+# Usamos un archivo JSON con vectores embebidos (clave: palabra/frase, valor: vector)
+# Cargar embeddings desde archivo local
+file_path = "Documents/elixir/livebook/glove_demo_large.json"
+
+embeddings =
+  File.read!(file_path)
+  |> Jason.decode!()
+
+# Ver algunas palabras
+#Map.keys(embeddings) |> Enum.take(10)
+
+
+```
+
+## Distancia semántica entre frases
+
+Creamos una función funcional para medir la similitud entre frases usando la distancia coseno.
+
+```elixir
+defmodule Embeddings do
+  def coseno_sim(vec1, vec2) do
+    dot = Enum.zip(vec1, vec2) |> Enum.reduce(0.0, fn {a, b}, acc -> acc + a * b end)
+    norm1 = :math.sqrt(Enum.reduce(vec1, 0.0, &(&1 * &1 + &2)))
+    norm2 = :math.sqrt(Enum.reduce(vec2, 0.0, &(&1 * &1 + &2)))
+    dot / (norm1 * norm2)
+  end
+end
+
+# Ejemplo
+Embeddings.coseno_sim(embeddings["apple"], embeddings["red"])
+
+```
+
+## Comparador interactivo
+
+Creamos un formulario donde el usuario puede escribir dos frases y ver qué tan similares son semánticamente.
+
+```elixir
+form = Kino.Control.form([
+  frase_1: Kino.Input.text("Frase 1", default: "elixir"),
+  frase_2: Kino.Input.text("Frase 2", default: "erlang")
+], submit: "Comparar")
+
+Kino.render(form)
+frame = Kino.Frame.new()
+Kino.render(frame)
+
+Kino.listen(form, fn %{data: %{frase_1: f1, frase_2: f2}} ->
+  case {Map.get(embeddings, f1), Map.get(embeddings, f2)} do
+    {nil, _} -> 
+      Kino.Frame.clear(frame)
+      Kino.Frame.append(frame, Kino.Markdown.new("❌ `#{f1}` no tiene embedding cargado"))
+    {_, nil} ->
+      Kino.Frame.clear(frame)
+      Kino.Frame.append(frame, Kino.Markdown.new("❌ `#{f2}` no tiene embedding cargado"))
+    {v1, v2} ->
+      sim = Embeddings.coseno_sim(v1, v2)
+      Kino.Frame.clear(frame)
+      Kino.Frame.append(frame, Kino.Markdown.new("""
+      ✅ Similaridad coseno entre `#{f1}` y `#{f2}`: **#{Float.round(sim, 4)}**
+      """))
+  end
+end)
+
+```
+
+## Búsqueda semántica
+
+Permite al usuario escribir una frase y obtener las 5 frases más parecidas semánticamente en el dataset.
+
+```elixir
+input = Kino.Input.text("Buscar frases similares a:", default: "elixir")
+Kino.render(input)
+
+frame_busqueda = Kino.Frame.new()
+Kino.render(frame_busqueda)
+
+Kino.listen(input, fn %{value: frase} ->
+  case Map.get(embeddings, frase) do
+    nil -> 
+      Kino.Frame.clear(frame_busqueda)
+      Kino.Frame.append(frame_busqueda, Kino.Markdown.new("❌ No hay embedding para `#{frase}`"))
+
+    vector ->
+      similares =
+        embeddings
+        |> Enum.map(fn {k, v} -> {k, Embeddings.coseno_sim(vector, v)} end)
+        |> Enum.reject(fn {k, _} -> k == frase end)
+        |> Enum.sort_by(&elem(&1, 1), :desc)
+        |> Enum.take(5)
+
+      markdown = similares
+      |> Enum.map(fn {k, v} -> "- **#{k}** → #{Float.round(v, 4)}" end)
+      |> Enum.join("\n")
+
+      Kino.Frame.clear(frame_busqueda)
+      Kino.Frame.append(frame_busqueda, Kino.Markdown.new("""
+      ### 🔍 Frases más parecidas a `#{frase}`:
+      #{markdown}
+      """))
+  end
+end)
+
+```
+
+## Visualización 2D de los embeddings
+
+Reducimos los vectores a 2 dimensiones con PCA y los graficamos con VegaLite.
+
+```elixir
+# Seleccionamos los 50 primeros
+import Nx
+
+frases = embeddings |> Enum.take(50)
+vectores = frases |> Enum.map(&elem(&1, 1)) |> Nx.tensor()
+
+# Normalizamos
+media = Nx.mean(vectores, axes: [0])
+centrado = Nx.subtract(vectores, media)
+
+# PCA: obtenemos componentes principales (simplificado)
+{_, _, v} = Nx.LinAlg.svd(centrado)
+proyectado = Nx.dot(centrado, v[[.., 0..1]])
+
+# Convertimos a lista de mapas para VegaLite
+puntos = frases
+|> Enum.with_index()
+|> Enum.map(fn {{palabra, _}, i} ->
+  [x, y] = proyectado[i] |> Nx.to_flat_list()
+  %{palabra: palabra, x: x, y: y}
+end)
+
+vl =
+  VegaLite.new()
+  |> VegaLite.data_from_values(puntos)
+  |> VegaLite.mark(:circle)
+  |> VegaLite.encode_field(:x, "x", type: :quantitative)
+  |> VegaLite.encode_field(:y, "y", type: :quantitative)
+  |> VegaLite.encode_field(:tooltip, "palabra", type: :nominal)
+  |> then(fn vl ->                # Aumentar tamaño del gráfico
+    %{vl | spec: Map.merge(vl.spec, %{"width" => 1000, "height" => 500})}
+  end)
+
+Kino.VegaLite.new(vl)
+
+```
+
+## 🧠 Conclusión
+
+Con esta notebook hemos logrado:
+
+Cargar y usar embeddings en Elixir de forma funcional.
+
+Medir similitud semántica.
+
+Hacer búsquedas por significado.
+
+Visualizar conceptos similares.
+
+Todo esto sin salir del mundo funcional, usando herramientas de Elixir y Livebook.

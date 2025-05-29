@@ -1,0 +1,102 @@
+<!-- livebook:{"persist_outputs":true} -->
+
+# Simulador de una colmena de abejas concurrentes
+
+```elixir
+Mix.install([
+  :kino, :kino_vega_lite
+])
+```
+
+## Section
+
+🧠 ¿Qué representa?
+Cada abeja es un proceso que trabaja, comunica su estado y eventualmente muere o termina. Usamos Livebook para ver este enjambre en acción.
+
+<!-- livebook:{"break_markdown":true} -->
+
+### 🐝 Módulo para una abeja (proceso individual)
+
+```elixir
+defmodule Abeja do
+  def start(id, coordinador_pid) do
+    spawn(fn -> loop(id, coordinador_pid) end)
+  end
+
+  defp loop(id, coordinador_pid) do
+    estados = ["esperando", "volando", "comiendo"]
+    estado_aleatorio = Enum.random(estados)
+
+    send(coordinador_pid, {:estado, id, estado_aleatorio})
+
+    Process.sleep(:rand.uniform(1000)) # añade aleatoriedad también al tiempo de espera
+    loop(id, coordinador_pid)
+  end
+end
+
+```
+
+<!-- livebook:{"output":true} -->
+
+```
+{:module, Abeja, <<70, 79, 82, 49, 0, 0, 9, ...>>, {:loop, 2}}
+```
+
+### 🧭 Coordinador que recibe mensajes y actualiza un gráfico
+
+```elixir
+defmodule Coordinador do
+ def start() do
+    # Configuramos el gráfico con los nombres de los campos esperados
+    vl =
+      VegaLite.new(width: 600, height: 400, padding: 20)
+      |> VegaLite.data_from_values([], name: "abejas")
+      |> VegaLite.mark(:bar)
+      |> VegaLite.encode_field(:x, "estado", type: :nominal)
+      |> VegaLite.encode_field(:y, "id", type: :ordinal, aggregate: :count)
+      |> VegaLite.encode_field(:color, "estado", type: :nominal)
+
+    grafico = Kino.VegaLite.new(vl)
+    Kino.render(grafico)
+
+    spawn(fn -> loop(grafico) end)
+  end
+
+  defp loop(grafico) do
+    receive do
+      {:estado, id, estado} ->
+        nuevo_estado = %{"id" => id, "estado" => estado}
+
+        Kino.VegaLite.push(grafico, nuevo_estado, dataset: "abejas")
+
+        loop(grafico)
+    end
+  end 
+end
+
+```
+
+<!-- livebook:{"output":true} -->
+
+```
+{:module, Coordinador, <<70, 79, 82, 49, 0, 0, 10, ...>>, {:loop, 1}}
+```
+
+### 🚀 Lanzar 5000 abejas concurrentes
+
+```elixir
+
+coordinador = Coordinador.start()
+
+1..5
+|> Enum.each(fn id ->
+  Abeja.start(id, coordinador)
+end)
+
+```
+
+<!-- livebook:{"output":true} -->
+
+```
+:ok
+```

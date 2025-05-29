@@ -1,0 +1,444 @@
+# Elixir para acertijos y problemas lógicos
+
+## Objetivo del Livebook
+
+Explora el poder de la programación funcional para razonar, deducir y resolver desafíos mentales con precisión declarativa.
+
+¿Puede la programación funcional ayudarnos a resolver acertijos clásicos de lógica, deducción y sentido común?
+
+Con Elixir, podemos modelar problemas como transformaciones sobre datos, aplicar reglas de forma declarativa y resolver incluso los acertijos más desafiantes sin usar estructuras imperativas ni bucles mutables.
+
+Este Livebook es un viaje por el razonamiento lógico expresado con código claro, funcional y elegante.
+
+###### ¿Qué se explica aquí?
+
+* Cómo representar reglas y hechos de forma declarativa
+* Cómo aplicar lógica funcional para deducir nuevas verdades
+* Cómo automatizar la resolución de acertijos complejos
+* Cómo usar Livebook para visualizar y jugar con los resultados
+
+## Backtracking funcional con Elixir
+
+```elixir
+defmodule Backtracking do
+  def buscar([], _validador), do: []
+  def buscar([candidato | resto], validador) do
+    case validador.(candidato) do
+      :ok -> [candidato | buscar(resto, validador)]
+      :descartar -> buscar(resto, validador)
+      {:elegir, nuevos} -> buscar(nuevos ++ resto, validador)
+    end
+  end
+end
+
+```
+
+Esta función permite iterar sobre candidatos posibles y tomar decisiones sobre cada uno. ¿Es válido? ¿Lo descartamos? ¿Lo expandimos?
+
+Este mecanismo es la base para resolver acertijos más complejos.
+
+## Caso práctico 1: El acertijo de Einstein (Zebra Puzzle)
+
+El acertijo de Einstein afirma que solo el 2% de las personas puede resolverlo sin ayuda. Tiene 5 casas con distintas características. ¿Quién tiene el pez? (https://es.wikipedia.org/wiki/Acertijo_de_la_cebra)
+
+Este es el tipo de problema que se beneficia enormemente de estructuras inmutables y funciones puras.
+
+<!-- livebook:{"break_markdown":true} -->
+
+##### Estructura de las casas
+
+```elixir
+defmodule Utils do
+  def permutations([]), do: [[]]
+  def permutations(list) do
+    for x <- list, y <- permutations(list -- [x]), do: [x | y]
+  end
+end
+```
+
+```elixir
+# Representamos una casa con un mapa de atributos
+defmodule Casa do
+ @atributos [:color, :nacionalidad, :bebida, :cigarro, :mascota]
+
+@valores %{
+  color: [:amarilla, :azul, :roja, :blanca, :verde],
+  nacionalidad: [:noruego, :danes, :britanico, :aleman, :sueco],
+  bebida: [:agua, :te, :leche, :cafe, :cerveza],
+  cigarro: [:dunhill, :blends, :pall_mall, :prince, :blue_master],
+  mascota: [:gatos, :caballos, :pajaros, :peces, :perro]
+}
+
+  def atributos, do: @atributos
+  def valores, do: @valores
+
+
+  def vacia, do: Enum.into(@atributos, %{}, fn attr -> {attr, nil} end)
+
+  def todas_casas do
+      for color <- Utils.permutations(@valores.color),
+        nacionalidad <- Utils.permutations(@valores.nacionalidad),
+        bebida <- Utils.permutations(@valores.bebida),
+        cigarro <- Utils.permutations(@valores.cigarro),
+        mascota <- Utils.permutations(@valores.mascota) do
+      Enum.zip([color, nacionalidad, bebida, cigarro, mascota])
+      |> Enum.map(fn {c, n, b, cig, m} ->
+        %{
+          color: c,
+          nacionalidad: n,
+          bebida: b,
+          cigarro: cig,
+          mascota: m
+        }
+      end)
+    end
+  end
+end
+
+# Creamos 5 casas vacías
+casas = List.duplicate(Casa.vacia(), 5)
+
+```
+
+Vamos a codificar las 15 pistas del acertijo como reglas declarativas. Algunas son del tipo:
+
+* “El noruego vive en la primera casa”
+* “La casa verde está justo a la izquierda de la blanca”
+* “El dueño de la casa del centro bebe leche”
+
+Agruparemos las reglas en funciones que se pueden aplicar sobre las casas.
+
+```elixir
+defmodule Reglas do
+  # 9. El noruego vive en la primera casa.
+  def noruego_primera([%{nacionalidad: :noruego} | _resto]), do: true
+  def noruego_primera(_), do: false
+
+  # 8. El hombre que vive en la casa del centro bebe leche.
+  def leche_en_medio(casas) do
+    Enum.at(casas, 2)[:bebida] == :leche
+  end
+end
+
+```
+
+#### Reglas relacionales
+
+<!-- livebook:{"break_markdown":true} -->
+
+`No evaluar`
+
+```elixir
+# Busca si existe una casa con ciertas propiedades
+defmodule Util do
+  def hay_casa?(casas, condiciones) do
+    Enum.any?(casas, fn casa ->
+      Enum.all?(condiciones, fn {k, v} -> casa[k] == v end)
+    end)
+  end
+end
+
+# Ejemplo: 1. El británico vive en la casa roja.
+defmodule Reglas do
+  def britanico_en_roja(casas) do
+    Util.hay_casa?(casas, %{nacionalidad: :britanico, color: :rojo})
+  end
+end
+
+```
+
+#### Reglas de vecindad (adyacencia)
+
+<!-- livebook:{"break_markdown":true} -->
+
+`No evaluar`
+
+```elixir
+defmodule Reglas do
+  # 10. El hombre que fuma Blend vive al lado del que tiene gatos.
+  def blend_junto_a_gatos(casas) do
+    Enum.any?(Enum.chunk_every(casas, 2, 1, :discard), fn [a, b] ->
+      (a.cigarro == :blend and b.mascota == :gatos) or
+      (b.cigarro == :blend and a.mascota == :gatos)
+    end)
+  end
+end
+
+```
+
+#### Motor de evaluación lógica
+
+```elixir
+# Recibe una lista de reglas y las evalúa sobre las casas actuales
+defmodule Evaluador do
+  def evaluar(casas, reglas) do
+    reglas
+    |> Enum.map(fn {nombre, regla} -> {nombre, regla.(casas)} end)
+  end
+end
+
+```
+
+#### Prueba de conjunto de reglas
+
+<!-- livebook:{"break_markdown":true} -->
+
+`No evaluar`
+
+```elixir
+reglas = [
+  {"Noruego en primera", &Reglas.noruego_primera/1},
+  {"Leche en el medio", &Reglas.leche_en_medio/1},
+  {"Británico en casa roja", &Reglas.britanico_en_roja/1},
+  {"Blend junto a gatos", &Reglas.blend_junto_a_gatos/1}
+]
+
+Evaluador.evaluar(casas, reglas)
+
+```
+
+#### Todas las reglas juntas
+
+```elixir
+# Atributos y valores posibles
+atributos = [:color, :nacionalidad, :bebida, :cigarro, :mascota]
+
+valores = %{
+  color: [:rojo, :verde, :amarilla, :blanca, :azul],
+  nacionalidad: [:britanico, :sueco, :noruego, :danes, :aleman],
+  bebida: [:te, :cafe, :leche, :cerveza, :agua],
+  cigarro: [:pall_mall, :dunhill, :blends, :blue_master, :prince],
+  mascota: [:perro, :pajaros, :gatos, :caballos, :pez]
+}
+
+# Generamos una lista de listas con valores barajados para cada atributo
+listas_valores = Enum.map(atributos, fn attr ->
+  Enum.shuffle(valores[attr])
+end)
+
+# Transponemos las listas para construir cada casa
+casas = Enum.zip(listas_valores)
+|> Enum.map(fn tupla ->
+  Enum.zip(atributos, Tuple.to_list(tupla))
+  |> Enum.into(%{})
+end)
+
+```
+
+```elixir
+# Módulo que contiene TODAS las reglas del acertijo
+defmodule ReglasEinstein do
+  def todas do
+    [
+      regla_1(), regla_2(), regla_3(), regla_4(), regla_5(),
+      regla_6(), regla_7(), regla_8(), regla_9(), regla_10(),
+      regla_11(), regla_12(), regla_13(), regla_14(), regla_15()
+    ]
+  end
+
+  defp regla_1, do: fn casas -> Enum.any?(casas, &(&1[:nacionalidad] == :britanico and &1[:color] == :rojo)) end
+  defp regla_2, do: fn casas -> Enum.any?(casas, &(&1[:nacionalidad] == :sueco and &1[:mascota] == :perro)) end
+  defp regla_3, do: fn casas -> Enum.any?(casas, &(&1[:nacionalidad] == :danes and &1[:bebida] == :te)) end
+  defp regla_4, do: fn casas ->
+    Enum.chunk_every(casas, 2, 1, :discard)
+    |> Enum.any?(fn [c1, c2] -> c1[:color] == :verde and c2[:color] == :blanca end)
+  end
+  defp regla_5, do: fn casas -> Enum.any?(casas, &(&1[:color] == :verde and &1[:bebida] == :cafe)) end
+  defp regla_6, do: fn casas -> Enum.any?(casas, &(&1[:cigarro] == :pall_mall and &1[:mascota] == :pajaros)) end
+  defp regla_7, do: fn casas -> Enum.any?(casas, &(&1[:color] == :amarilla and &1[:cigarro] == :dunhill)) end
+  defp regla_8, do: fn casas -> Enum.at(casas, 2)[:bebida] == :leche end
+  defp regla_9, do: fn casas -> Enum.at(casas, 0)[:nacionalidad] == :noruego end
+  defp regla_10, do: fn casas -> vecino?(casas, :cigarro, :blends, :mascota, :gatos) end
+  defp regla_11, do: fn casas -> vecino?(casas, :mascota, :caballos, :cigarro, :dunhill) end
+  defp regla_12, do: fn casas -> Enum.any?(casas, &(&1[:cigarro] == :blue_master and &1[:bebida] == :cerveza)) end
+  defp regla_13, do: fn casas -> Enum.any?(casas, &(&1[:nacionalidad] == :aleman and &1[:cigarro] == :prince)) end
+  defp regla_14, do: fn casas -> vecino?(casas, :nacionalidad, :noruego, :color, :azul) end
+  defp regla_15, do: fn casas -> vecino?(casas, :cigarro, :blends, :bebida, :agua) end
+
+  defp vecino?(casas, campo1, valor1, campo2, valor2) do
+    Enum.with_index(casas)
+    |> Enum.any?(fn {casa, i} ->
+      casa[campo1] == valor1 and (
+        match?(^valor2, get_in(casas, [Access.at(i - 1), campo2])) or
+        match?(^valor2, get_in(casas, [Access.at(i + 1), campo2]))
+      )
+    end)
+  end
+end
+
+```
+
+```elixir
+
+# Verificamos si la combinación generada cumple todas las reglas
+resultado =
+  if Enum.all?(ReglasEinstein.todas(), fn regla -> regla.(casas) end) do
+    {:ok, casas}
+  else
+    {:error, "Esta combinación no cumple todas las reglas."}
+  end
+
+```
+
+#### Ahora lo usamos
+
+```elixir
+defmodule Generador do
+  def siguiente_atributo(casas) do
+    Casa.atributos()
+    |> Enum.find(fn attr -> Enum.any?(casas, fn casa -> is_map(casa) and casa[attr] == nil end) end)
+  end
+
+  def valores_disponibles(casas, attr) do
+    usados = Enum.map(casas, & &1[attr]) |> Enum.reject(&is_nil/1)
+    Casa.valores()[attr] -- usados
+  end
+
+  def asignar(casas, attr, valor) do
+    idx = Enum.find_index(casas, fn casa -> is_map(casa) and casa[attr] == nil end)
+
+    if idx do
+      List.update_at(casas, idx, &Map.put(&1, attr, valor))
+    else
+      casas
+    end
+  end
+  
+  def expandir(casas) do
+    case siguiente_atributo(casas) do
+      nil -> []
+      attr ->
+        for valor <- valores_disponibles(casas, attr) do
+          asignar(casas, attr, valor)
+        end
+    end
+  end
+
+  def completo?(casas) do
+    Enum.all?(casas, fn
+      casa when is_map(casa) ->
+        Enum.all?(Casa.atributos(), fn attr ->
+          not is_nil(casa[attr])
+        end)
+
+      _ -> false
+    end)
+  end
+end
+```
+
+```elixir
+defmodule BacktrackingModule do
+  def buscar([], _validador), do: []
+  def buscar([candidato | resto], validador) do
+    case validador.(candidato) do
+      :ok -> [candidato | buscar(resto, validador)]
+      :descartar -> buscar(resto, validador)
+      {:elegir, nuevos} -> buscar(nuevos ++ resto, validador)
+    end
+  end
+end
+
+```
+
+```elixir
+casas_iniciales = List.duplicate(Casa.vacia(), 5)
+
+solucion =
+  BacktrackingModule.buscar([casas_iniciales], fn casas ->
+    cond do
+      not Generador.completo?(casas) ->
+        {:elegir, Generador.expandir(casas)}
+
+      Enum.all?(ReglasEinstein.todas(), fn regla -> regla.(casas) end) ->
+        :ok
+
+      true ->
+        :descartar
+    end
+  end)
+  |> List.first()
+
+IO.inspect(solucion, label: "✅ Solución")
+```
+
+## Problemas lógicos con múltiple solución: N-Reinas
+
+#### Algoritmo recursivo de N-Reinas
+
+defmodule NReinas do
+  def resolver(n), do: colocar_reinas(n, 0, [])
+
+defp colocar_reinas(n, fila, reinas) when fila == n, do: [reinas]
+  defp colocar_reinas(n, fila, reinas) do
+
+```
+for col <- 0..(n - 1),
+    seguro?(fila, col, reinas),
+    solucion <- colocar_reinas(n, fila + 1, [{fila, col} | reinas]) do
+  solucion
+end
+```
+
+end
+
+defp seguro?(f, c, reinas) do
+
+```
+Enum.all?(reinas, fn {fr, cr} ->
+  cr != c and abs(f - fr) != abs(c - cr)
+end)
+```
+
+end
+end
+
+```elixir
+# Algoritmo recursivo de N-Reinas
+defmodule NReinas do
+  def resolver(n), do: colocar_reinas(n, 0, [])
+
+  defp colocar_reinas(n, fila, reinas) when fila == n, do: [reinas]
+  defp colocar_reinas(n, fila, reinas) do
+    for col <- 0..(n - 1),
+        seguro?(fila, col, reinas),
+        solucion <- colocar_reinas(n, fila + 1, [{fila, col} | reinas]) do
+      solucion
+    end
+  end
+
+  defp seguro?(f, c, reinas) do
+    Enum.all?(reinas, fn {fr, cr} ->
+      cr != c and abs(f - fr) != abs(c - cr)
+    end)
+  end
+end
+
+```
+
+```elixir
+NReinas.resolver(6)
+|> Enum.map(&Enum.reverse/1)
+
+```
+
+## Visualización de la solución
+
+```elixir
+# Visualización simple con Kino.VegaLite
+solucion = NReinas.resolver(4) |> Enum.map(&Enum.reverse/1)
+
+points =
+  solucion
+  |> Enum.map(fn {fila, col} -> %{"fila" => fila, "columna" => col} end)
+
+vl =
+  VegaLite.new()
+  |> VegaLite.data_from_values(points)
+  |> VegaLite.mark(:square)
+  |> VegaLite.encode(:x, "columna", type: :ordinal)
+  |> VegaLite.encode(:y, "fila", type: :ordinal)
+
+Kino.VegaLite.new(vl)
+
+```

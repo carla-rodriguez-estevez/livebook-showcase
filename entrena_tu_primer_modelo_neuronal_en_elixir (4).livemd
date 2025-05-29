@@ -1,0 +1,325 @@
+# Entrena tu primer modelo neuronal en Elixir
+
+```elixir
+Mix.install([
+    :req,
+    {:exla, "~> 0.9.2", targets: [:host]},
+    {:nx, "~> 0.5"},
+    {:axon, "~> 0.5"},
+    {:kino, "~> 0.13"},
+    {:kino_vega_lite, "~> 0.1.7"},
+    {:vega_lite, "~> 0.1.6"},
+    {:kino_explorer, "~> 0.1.20"}
+])
+
+Nx.global_default_backend(EXLA.Backend)
+```
+
+## Introducción
+
+En esta notebook aprenderás cómo entrenar un modelo neuronal usando solo Elixir y Livebook.
+
+**Objetivo:** Predecir la calidad del vino a partir de 11 características químicas usando una red neuronal simple implementada con [Axon](https://github.com/elixir-nx/axon).
+
+Aprenderás:
+
+* A explorar un dataset real con Elixir.
+* A preprocesar datos y visualizarlos con VegaLite.
+* A construir y entrenar redes neuronales usando Axon.
+* ¡Y todo desde una notebook interactiva en Livebook!
+
+**Dataset:** `Wine Quality` del repositorio de Hugging Face (`olistbr/wine-quality`)
+
+Post recomendable [Dockyard](https://dockyard.com/blog/2022/01/11/getting-started-with-axon)
+
+```elixir
+Nx.default_backend(EXLA.Backend)
+```
+
+## ¿Por qué entrenar modelos en Elixir?
+
+Elixir no es solo para web y concurrencia. Gracias a las librerías de `Nx` (Numerical Elixir), puedes hacer computación numérica eficiente en CPU y GPU.
+
+Ventajas de entrenar modelos en Elixir:
+
+* Integración con el sistema concurrente.
+* Modelos fácilmente servibles con Phoenix/LiveView.
+* Ideal para sistemas distribuidos.
+* Livebook permite visualización y control interactivo.
+
+## Cargando un dataset real desde Hugging Face
+
+```elixir
+url = "https://archive.ics.uci.edu/ml/machine-learning-databases/wine-quality/winequality-red.csv"
+filename = "winequality-red.csv"
+
+unless File.exists?(filename) do
+  IO.puts("Descargando el dataset...")
+  response = Req.get!(url).body
+  File.write!(filename, response)
+end
+
+df = Explorer.DataFrame.from_csv!(filename, delimiter: ";", infer_schema_length: 10000)
+Explorer.DataFrame.head(df)
+
+```
+
+## Visualización básica de los datos
+
+```elixir
+require Explorer.DataFrame, as: DF
+require Explorer.Series, as: Series
+
+
+df_grouped = Explorer.DataFrame.group_by(df, :quality)
+
+df_summarised = DF.summarise(df_grouped, count: count(quality))
+
+df_rows = Explorer.DataFrame.to_rows(df_summarised)
+
+vl =  VegaLite.new()
+  |> VegaLite.data_from_values(df_rows)
+  |> VegaLite.mark(:bar)
+  |> VegaLite.encode_field(:x, "quality", type: :ordinal)
+  |> VegaLite.encode_field(:y, "count", type: :quantitative)
+|> then(fn vl ->                # Aumentar tamaño del gráfico
+    %{vl | spec: Map.merge(vl.spec, %{"width" => 1000, "height" => 500})}
+  end)
+
+```
+
+## Preprocesamiento: Normalización y split
+
+```elixir
+defmodule Dataset do
+  def prepare(df) do
+    columns = Explorer.DataFrame.names(df) -- ["quality"]
+
+    x =
+      df
+      |> Explorer.DataFrame.select(columns)
+      |> Explorer.DataFrame.to_rows()
+      |> Enum.map(fn row -> Enum.map(columns, &Map.get(row, &1)) end)
+      |> Nx.tensor(type: :f32)
+
+    y =
+      df
+      |> Explorer.DataFrame.pull("quality")
+      |> Explorer.Series.to_list()
+      |> Nx.tensor(type: :s32)
+
+    {x, y}
+  end
+end
+
+{x, y} = Dataset.prepare(df)
+
+split_idx = round(Nx.axis_size(x, 0) * 0.8)
+{train_x, test_x} = Nx.split(x, split_idx)
+{train_y, test_y} = Nx.split(y, split_idx)
+```
+
+Perfecto. Ahora que has preparado exitosamente los datos con Nx y Explorer, el siguiente paso es entrenar un modelo neuronal simple usando Axon y luego mostrar visualmente cómo se desempeña.
+
+## Definir el modelo
+
+Usamos `softmax` porque la etiqueta de calidad va de 0 a 10 (ajustamos eso luego si hace falta).
+
+```elixir
+model =
+  Axon.input("input", shape: {11})
+  |> Axon.dense(32, activation: :relu)
+  |> Axon.dense(16, activation: :relu)
+  |> Axon.dense(10, activation: :softmax)
+
+
+```
+
+## Preparar las etiquetas (normalización de clases)
+
+La variable quality puede tener valores no consecutivos (por ejemplo, 3, 4, 5, 6, 7, 8). Para softmax necesitamos clases consecutivas desde 0. Así que convertimos:
+
+```elixir
+# Obtener clases únicas y ordenadas
+classes = y |> Nx.to_flat_list() |> Enum.uniq() |> Enum.sort()
+
+# Mapa de valor original a clase 0-indexada
+class_to_index = Map.new(Enum.with_index(classes))
+
+# Aplicar transformación (y es tensor de etiquetas ya indexadas desde 0)
+y = y |> Nx.to_flat_list() |> Enum.map(&class_to_index[&1]) |> Nx.tensor(type: :s32)
+
+# Obtener número de muestras de entrenamiento
+num_train = Nx.axis_size(train_x, 0)
+
+# Split correcto
+{train_y, test_y} = Nx.split(y, num_train)
+```
+
+## Configurar el entrenador
+
+Ahora entrenamos el modelo con `Axon.Loop`. Usamos `:categorical_cross_entropy` para clasificación.
+
+```elixir
+# Paso 1: Obtener las etiquetas desde el dataset original
+y = df["quality"]
+
+# Paso 2: Convertir las etiquetas categóricas en índices (0, 1, ..., n)
+classes = y |> Nx.to_flat_list() |> Enum.uniq() |> Enum.sort()
+class_to_index = Map.new(Enum.with_index(classes))
+
+y_indices =
+  y
+  |> Nx.to_flat_list()
+  |> Enum.map(&Map.fetch!(class_to_index, &1))
+  |> Nx.tensor(type: {:u, 8})
+
+# Paso 3: Dividir en etiquetas de entrenamiento y prueba (usando el tamaño de train_x)
+num_train = Nx.axis_size(train_x, 0)
+{train_y, test_y} = Nx.split(y_indices, num_train)
+
+# Paso 4: Codificar etiquetas como one-hot
+num_classes = length(classes)
+train_y = Nx.equal(Nx.new_axis(train_y, -1), Nx.iota({1, num_classes}))
+test_y = Nx.equal(Nx.new_axis(test_y, -1), Nx.iota({1, num_classes}))
+
+# Confirmar shapes y clases
+IO.inspect(classes, label: "Clases únicas")
+IO.inspect({Nx.shape(train_y), Nx.shape(test_y)}, label: "Shapes de etiquetas one-hot")
+```
+
+## Evaluar el modelo
+
+```elixir
+# Asegúrate de que train_y solo tenga una dimensión {1279}
+IO.inspect(Nx.shape(train_y), label: "train_y shape antes")
+
+# Si train_y tiene más de una dimensión, aplana
+train_y = if length(Tuple.to_list(Nx.shape(train_y))) > 1 do
+  # Convierte matriz a vector tomando el índice mayor por fila
+  Nx.argmax(train_y, axis: 1)
+else
+  train_y
+end
+
+# Si test_y tiene más de una dimensión, aplana
+test_y = if length(Tuple.to_list(Nx.shape(test_y))) > 1 do
+  Nx.argmax(test_y, axis: 1)
+else
+  test_y
+end
+
+IO.inspect(Nx.shape(train_y), label: "train_y shape después")
+
+# Ahora sí, haz el one-hot una sola vez
+num_classes = length(classes)
+train_y_one_hot = Nx.equal(Nx.new_axis(train_y, -1), Nx.iota({1, num_classes}))
+test_y_one_hot = Nx.equal(Nx.new_axis(test_y, -1), Nx.iota({1, num_classes}))
+
+# Inspecciona shapes - deberían ser {1279, 6} y no {1279, 6, 6}
+IO.inspect(Nx.shape(train_x), label: "train_x shape")
+IO.inspect(Nx.shape(train_y_one_hot), label: "train_y_one_hot shape") 
+
+batch_size = min(32, Nx.axis_size(train_x, 0))
+batched_x = Nx.to_batched(train_x, batch_size)
+batched_y = Nx.to_batched(train_y_one_hot, batch_size)
+
+batched_stream = Stream.zip(batched_x, batched_y)
+
+# Asegúrate de que el modelo esté configurado correctamente (entrada y salida)
+model = 
+  Axon.input("input", shape: {11})
+  |> Axon.dense(32, activation: :relu)
+  |> Axon.dense(16, activation: :relu)
+  |> Axon.dense(num_classes, activation: :softmax)
+
+# Entrena
+loop = Axon.Loop.trainer(model, :categorical_cross_entropy, :adam)
+loop = Axon.Loop.run(loop, batched_stream, %{}, epochs: 50)
+```
+
+## Visualización de predicciones
+
+```elixir
+# 1. Ejecutar predicciones con el modelo entrenado
+predicted_output = Axon.predict(model, loop, test_x)
+IO.inspect(Nx.shape(predicted_output), label: "Shape de las predicciones")
+
+predicted_classes = Nx.argmax(predicted_output, axis: 1)
+IO.inspect(Nx.shape(predicted_classes), label: "Shape de las clases predichas")
+
+test_y_indices = 
+  if length(Tuple.to_list(Nx.shape(test_y_one_hot))) > 1 do
+    Nx.argmax(test_y_one_hot, axis: 1)
+  else
+    test_y_one_hot  # si ya son índices
+  end
+
+index_to_class = Map.new(Enum.map(class_to_index, fn {class, idx} -> {idx, class} end))
+
+real_labels = 
+  test_y_indices
+  |> Nx.to_flat_list()
+  |> Enum.map(&Map.get(index_to_class, &1))
+
+predicted_labels =
+  predicted_classes
+  |> Nx.to_flat_list()
+  |> Enum.map(&Map.get(index_to_class, &1))
+
+rows =
+  Enum.zip(real_labels, predicted_labels)
+  |> Enum.map(fn {r, p} -> %{"real" => r, "predicha" => p} end)
+
+rows_with_count =
+  rows
+  |> Enum.reduce(%{}, fn row, acc ->
+    key = {row["real"], row["predicha"]}
+    Map.update(acc, key, 1, &(&1 + 1))
+  end)
+  |> Enum.map(fn {{r, p}, count} -> 
+    %{"real" => r, "predicha" => p, "count" => count} 
+  end)
+
+
+```
+
+```elixir
+vl =  VegaLite.new()
+|> VegaLite.data_from_values(rows_with_count)
+|> VegaLite.mark(:circle)
+|> VegaLite.encode_field(:x, "real", type: :ordinal, title: "Valor real")
+|> VegaLite.encode_field(:y, "predicha", type: :ordinal, title: "Valor predicho")
+|> VegaLite.encode_field(:size, "count", type: :quantitative)
+|> VegaLite.encode_field(:color, "count", type: :quantitative)
+|> then(fn vl ->                # Aumentar tamaño del gráfico
+    %{vl | spec: Map.merge(vl.spec, %{"width" => 1000, "height" => 500})}
+  end)
+
+```
+
+#### Análisis de la matriz de confusión mostrada
+
+1. **Hay concentración en las predicciones de valor 6** -> Indica que el modelo tiende a predecir bastante esta categoría.
+
+2. **Observamos predicciones cercanas a la diagonal** ->  Para los valores reales 5 y 6, las predicciones tienden a estar cerca de los valores correctos, lo que indica que el modelo tiene cierta capacidad predictiva.
+
+#### Oportunidades de mejora
+
+1. **Sesgo hacia la predicción del valor 6** -> Esto podría indicar un desbalance en los datos de entrenamiento o que el modelo no está captando suficientes características distintivas.
+2. **Falta de predicciones de valores extremos** -> Sugiere que el modelo tiende a predecir valores medios independientemente de los datos de entrada
+3. **Limitada diagonal principal** -> En una matriz de confusión ideal, la mayoría de los puntos deberían estar en la diagonal principal
+
+<!-- livebook:{"break_markdown":true} -->
+
+#### Recomendaciones para mejorar el modelo
+
+* Balancear el conjunto de datos: Asegurarse de que todas las clase estén adecuadamente representadas en el conjunto de entrenamiento.
+
+* Aumentar la complejidad del modelo: Pruebar con más capas ocultas o más neuronas por capa para capturar relaciones más complejas.
+
+* Feature engineering: Tal vez algunas características son más importantes que otras para discriminar entre diferentes niveles de calidad.
+
+* Regularización: Si el modelo está sobreajustado a ciertos patrones, técnicas como dropout o regularización L2 podrían ayudar.
+
+* Técnicas de rebalanceo: Si hay clases minoritarias, técnicas como [SMOTE](https://imbalanced-learn.org/stable/references/generated/imblearn.over_sampling.SMOTE.html) podrían ayudar a mejorar la predicción de valores menos frecuentes

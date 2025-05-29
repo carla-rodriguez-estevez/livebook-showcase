@@ -1,0 +1,154 @@
+# Sistema de reglas declarativas con lógica funcional
+
+## Introducción al enfoque declarativo y funcional
+
+Queremos expresar lógica de negocio como un conjunto de reglas legibles, modificables y componibles, sin recurrir a estructuras de control como `if`, `cond` o `case`. En lugar de eso, modelaremos:
+
+* **Hechos** como mapas de información disponibles.
+* **Reglas** como funciones puras que declaran su intención.
+* **Evaluación** como una composición de esas reglas sobre los hechos.
+
+Este enfoque mejora la mantenibilidad y permite separar reglas de procesamiento.
+
+## Representación de hechos y reglas
+
+```elixir
+# Modelo de un hecho: información disponible en un momento dado
+hecho = %{
+  edad: 25,
+  rol: :admin,
+  activo: true
+}
+
+# Modelo de una regla: función pura que recibe un hecho y 
+# devuelve {:ok, mensaje} o {:error, mensaje}
+regla_es_adulto = fn %{edad: edad} ->
+  if edad >= 18, do: {:ok, "Es mayor de edad"}, else: {:error, "Es menor de edad"}
+end
+
+regla_es_admin = fn %{rol: rol} ->
+  if rol == :admin, do: {:ok, "Es administrador"}, else: {:error, "No es admin"}
+end
+
+```
+
+## Sistema de evaluación de reglas
+
+```elixir
+# Función que aplica una lista de reglas a un hecho y agrupa resultados
+defmodule MotorReglas do
+  def evaluar(hecho, reglas) do
+    Enum.map(reglas, fn regla -> regla.(hecho) end)
+  end
+
+  def filtrar_ok(resultados), do: Enum.filter(resultados, &match?({:ok, _}, &1))
+  def filtrar_errores(resultados), do: Enum.filter(resultados, &match?({:error, _}, &1))
+end
+
+# 🔍 Probar
+reglas = [regla_es_adulto, regla_es_admin]
+resultados = MotorReglas.evaluar(hecho, reglas)
+IO.inspect(resultados, label: "🎯 Resultados")
+
+```
+
+## Composición y control de flujo funcional elixir
+
+```elixir
+defmodule Evaluador do
+  def validar(hecho, reglas) do
+    resultados = MotorReglas.evaluar(hecho, reglas)
+
+    if Enum.all?(resultados, fn
+      {:ok, _} -> true
+      _ -> false
+    end) do
+      {:ok, Enum.map(resultados, fn {:ok, msg} -> msg end)}
+    else
+      errores = MotorReglas.filtrar_errores(resultados)
+      {:error, Enum.map(errores, fn {:error, msg} -> msg end)}
+    end
+  end
+end
+
+# 🚀 Probar
+Evaluador.validar(%{edad: 17, rol: :user}, reglas)
+
+```
+
+## Casos de uso: validaciones y lógica de negocio
+
+```elixir
+# Nueva regla: requiere usuario activo
+regla_activo = fn %{activo: activo} ->
+  if activo, do: {:ok, "Usuario activo"}, else: {:error, "Usuario inactivo"}
+end
+
+# Escenario de login
+usuario = %{edad: 34, rol: :user, activo: false}
+reglas_login = [regla_es_adulto, regla_activo]
+
+Evaluador.validar(usuario, reglas_login)
+
+```
+
+## Extensiones útiles
+
+Hasta ahora, hemos visto reglas como simples funciones. Pero en sistemas declarativos complejos, eso no es suficiente. Necesitamos que las reglas no solo verifiquen condiciones, sino que también puedan describirse a sí mismas, ser ordenadas, y ser manipulables como datos.
+
+En esta celda introducimos un patrón funcional muy poderoso:
+Convertimos cada regla en una estructura de datos enriquecida.
+
+👉 Cada Regla contiene:
+
+**nombre**: una descripción humana legible para trazabilidad o auditoría.
+
+**prioridad**: un número que nos permite ordenarlas y ejecutar primero las más críticas.
+
+**verificador**: la función que evalúa el hecho.
+
+Esta forma de modelar reglas desacopla la lógica de negocio de su ejecución y habilita:
+
+* Reglas configurables desde archivos externos.
+
+* Cambios dinámicos de reglas en tiempo real.
+
+* Depuración y trazabilidad mejoradas.
+
+En resumen: esta celda convierte funciones en conocimiento estructurado. Lo que antes eran solo líneas de código ahora pueden formar un sistema declarativo autoorganizado.
+
+```elixir
+defmodule Regla do
+  defstruct [:nombre, :prioridad, :verificador]
+
+  def nueva(nombre, prioridad, verificador) do
+    %__MODULE__{nombre: nombre, prioridad: prioridad, verificador: verificador}
+  end
+
+  def ejecutar(%__MODULE__{nombre: nombre, verificador: vf}, hecho) do
+    if vf.(hecho), do: {:ok, nombre}, else: {:error, nombre}
+  end
+end
+
+reglas_ext = [
+  Regla.nueva("Mayor de edad", 1, fn %{edad: edad} -> edad >= 18 end),
+  Regla.nueva("Admin", 2, fn %{rol: rol} -> rol == :admin end)
+]
+
+for regla <- reglas_ext do
+  Regla.ejecutar(regla, %{edad: 20, rol: :user})
+end
+
+```
+
+Esta idea de reglas como datos nos va a permitir aplicar ordenación, filtrado, o incluso agrupación por tipo de regla. Nos acercamos a tener un motor de inferencia funcional, algo que se encuentra en el núcleo de muchos **sistemas expertos**.
+
+## Conclusión
+
+* Un sistema de reglas declarativas permite una lógica de negocio más transparente, composable y testable.
+* Elixir, con funciones puras y estructuras inmutables, es ideal para este enfoque.
+* Puedes extender el sistema fácilmente: añadir trazabilidad, persistencia, UI para edición de reglas, etc.
+
+---
+
+📍 Este enfoque es útil en sistemas de autorización, validaciones, motores de decisión, y simulaciones basadas en reglas.

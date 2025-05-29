@@ -1,0 +1,115 @@
+# Entrena tu primer modelo neuronal en Elixir
+
+```elixir
+Mix.install([
+    :req,
+    {:exla, "~> 0.2"},
+    {:nx, "~> 0.5"},
+    {:axon, "~> 0.5"},
+    {:kino, "~> 0.8.1"},
+    {:kino_vega_lite, "~> 0.1.7"},
+    {:vega_lite, "~> 0.1.6"}
+
+])
+
+Nx.global_default_backend(EXLA.Backend)
+```
+
+## Introducción
+
+En esta notebook aprenderás cómo entrenar un modelo neuronal usando solo Elixir y Livebook.
+
+**Objetivo:** Predecir la calidad del vino a partir de 11 características químicas usando una red neuronal simple implementada con [Axon](https://github.com/elixir-nx/axon).
+
+Aprenderás:
+
+* A explorar un dataset real con Elixir.
+* A preprocesar datos y visualizarlos con VegaLite.
+* A construir y entrenar redes neuronales usando Axon.
+* ¡Y todo desde una notebook interactiva en Livebook!
+
+**Dataset:** `Wine Quality` del repositorio de Hugging Face (`olistbr/wine-quality`)
+
+```elixir
+Nx.default_backend(Torchx)
+```
+
+## ¿Por qué entrenar modelos en Elixir?
+
+Elixir no es solo para web y concurrencia. Gracias a las librerías de `Nx` (Numerical Elixir), puedes hacer computación numérica eficiente en CPU y GPU.
+
+Ventajas de entrenar modelos en Elixir:
+
+* Integración con el sistema concurrente.
+* Modelos fácilmente servibles con Phoenix/LiveView.
+* Ideal para sistemas distribuidos.
+* Livebook permite visualización y control interactivo.
+
+## Cargando un dataset real desde Hugging Face
+
+```elixir
+# Descargamos el CSV de Hugging Face
+url = "https://huggingface.co/datasets/olistbr/wine-quality/resolve/main/winequality-red.csv"
+filename = "winequality-red.csv"
+
+unless File.exists?(filename) do
+  {:ok, content} = Req.get!(url).body |> then(&File.write(filename, &1))
+end
+
+# Cargamos el dataset
+df = Explorer.DataFrame.from_csv!(filename)
+
+Explorer.DataFrame.head(df)
+
+```
+
+## Visualización básica de los datos
+
+```elixir
+# Distribución de la calidad del vino
+df
+|> Explorer.DataFrame.group_by("quality")
+|> Explorer.DataFrame.count()
+|> Kino.VegaLite.new()
+|> Kino.VegaLite.data_from_values()
+|> Kino.VegaLite.mark(:bar)
+|> Kino.VegaLite.encode_field(:x, "quality", type: :ordinal)
+|> Kino.VegaLite.encode_field(:y, "count", type: :quantitative)
+
+```
+
+## Preprocesamiento: Normalización y split
+
+```elixir
+defmodule Dataset do
+  def prepare(df) do
+    columns = Explorer.DataFrame.names(df) -- ["quality"]
+    
+    # Convertimos el dataframe a tensores de Nx
+    x =
+      df
+      |> Explorer.DataFrame.select(columns)
+      |> Explorer.DataFrame.to_tensor()
+      |> Nx.to_batched_list(1)
+      |> Enum.map(&Nx.reshape(&1, {11}))
+
+    y =
+      df
+      |> Explorer.DataFrame.select(["quality"])
+      |> Explorer.DataFrame.to_tensor()
+      |> Nx.squeeze()
+    
+    {x, y}
+  end
+end
+
+{x, y} = Dataset.prepare(df)
+
+{train_x, test_x} = Enum.split(x, round(length(x) * 0.8))
+{train_y, test_y} = Nx.split(y, [round(length(y) * 0.8)])
+
+```
+
+```python
+
+```

@@ -1,0 +1,358 @@
+# Explorando Algoritmos Funcionales con Elixir
+
+```elixir
+Mix.install([
+  :kino,
+  :vega_lite,
+  {:kino_vega_lite, "~> 0.1.8"}
+])
+```
+
+## Introducción al pensamiento funcional
+
+**Una travesía visual por estructuras y procesos funcionales**
+
+En la programación funcional, evitamos el estado mutable y los bucles tradicionales. En su lugar, usamos:
+
+* **Recursión** en lugar de bucles.
+* **Funciones puras** que no tienen efectos secundarios.
+* **Funciones de orden superior** como `map`, `reduce`, `filter`.
+* **Pattern matching** y **pipe operator (`|>`)** para claridad expresiva.
+
+Vamos a explorar cómo estos principios se aplican a resolver problemas reales de forma elegante en Elixir.
+
+## Recursión con visualización: Números de Fibonacci
+
+#### 🔁 Fibonacci con Recursión: ¿Pura elegancia o desastre de performance?
+
+Vamos a comparar una versión recursiva pura vs una con memoización.
+
+<!-- livebook:{"break_markdown":true} -->
+
+##### Fibonacci simple recursivo
+
+```elixir
+defmodule Fibonacci do
+  def naive(0), do: 0
+  def naive(1), do: 1
+  def naive(n), do: naive(n - 1) + naive(n - 2)
+end
+
+```
+
+#### Visualización del tiempo de ejecución
+
+```elixir
+tiempos = for n <- 0..45 do
+  tiempo = :timer.tc(fn -> Fibonacci.naive(n) end) |> elem(0)
+  %{n: n, tiempo_ms: tiempo / 1000}
+end
+
+vl =
+  VegaLite.new()
+  |> VegaLite.data_from_values(tiempos)
+  |> VegaLite.encode_field(:x, "n", type: :quantitative)
+  |> VegaLite.encode_field(:y, "tiempo_ms", type: :quantitative)
+  |> VegaLite.mark(:line)
+
+Kino.VegaLite.new(vl)
+
+```
+
+#### Memoización en Elixir
+
+```elixir
+defmodule FibMemo do
+  def calculate(n), do: memo(n, %{})
+
+  defp memo(0, cache), do: {0, cache}
+  defp memo(1, cache), do: {1, cache}
+  defp memo(n, cache) do
+    case Map.get(cache, n) do
+      nil ->
+        {a, cache1} = memo(n - 1, cache)
+        {b, cache2} = memo(n - 2, cache1)
+        {a + b, Map.put(cache2, n, a + b)}
+      result ->
+        {result, cache}
+    end
+  end
+end
+
+```
+
+```elixir
+tiempos_memo = for n <- 0..1000 do
+  tiempo = :timer.tc(fn -> FibMemo.calculate(n) end) |> elem(0)
+  %{n: n, tiempo_ms: tiempo / 1000}
+end
+
+vl2 =
+  VegaLite.new()
+  |> VegaLite.data_from_values(tiempos_memo)
+  |> VegaLite.encode_field(:x, "n", type: :quantitative)
+  |> VegaLite.encode_field(:y, "tiempo_ms", type: :quantitative)
+  |> VegaLite.mark(:line)
+
+Kino.VegaLite.new(vl2)
+
+```
+
+## Map y Filter con visualización
+
+Vamos a aplicar transformaciones funcionales a una lista de estructuras representando sensores.
+
+```elixir
+sensores = for i <- 1..500 do
+  %{
+    id: "S-#{i}",
+    valor: :rand.uniform(100),
+    activo: :rand.uniform(10) > 2
+  }
+end
+
+filtrados = sensores
+|> Enum.filter(& &1.activo)
+|> Enum.map(& %{&1 | valor: Float.round(&1.valor * 1.2, 2)})
+
+Kino.DataTable.new(filtrados)
+
+```
+
+```elixir
+vl3 =
+  VegaLite.new()
+  |> VegaLite.data_from_values(filtrados)
+  |> VegaLite.encode_field(:x, "id", type: :nominal)
+  |> VegaLite.encode_field(:y, "valor", type: :quantitative)
+  |> VegaLite.mark(:bar)
+
+Kino.VegaLite.new(vl3)
+
+```
+
+## Búsqueda funcional: pathfinding DFS y BFS
+
+En programación funcional, los algoritmos de búsqueda como DFS `Depth-First Search` y BFS `Breadth-First Search` pueden implementarse sin recurrir a estructuras mutables ni bucles explícitos. En su lugar, usamos recursión y estructuras inmutables como listas, colas y mapas.
+
+Usaremos un laberinto cuadrado representado como matriz `mapa` y visualizaremos cómo se explora desde un punto inicial hasta uno final. Luego mostraremos otro caso de uso práctico con grafos generales.
+
+<!-- livebook:{"break_markdown":true} -->
+
+##### Representación del mapa
+
+* `:s` → inicio
+
+* `:f` → final
+
+* `:_` → camino válido
+
+* `:p` → pared
+
+```elixir
+mapa = [
+  [:s, :_, :_, :p, :_],
+  [:p, :p, :_, :p, :_],
+  [:_, :_, :_, :p, :_],
+  [:_, :p, :p, :_, :_],
+  [:_, :_, :_, :_, :f]
+]
+
+```
+
+#### Utilidades para moverse
+
+```elixir
+defmodule Grid do
+  def dimensiones(grid), do: {length(grid), length(hd(grid))}
+
+  def vecinos({x, y}, grid) do
+    {rows, cols} = dimensiones(grid)
+    [
+      {x - 1, y},
+      {x + 1, y},
+      {x, y - 1},
+      {x, y + 1}
+    ]
+    |> Enum.filter(fn {i, j} ->
+      i in 0..(rows - 1) and j in 0..(cols - 1) and Enum.at(Enum.at(grid, i), j) != :p
+    end)
+  end
+end
+
+```
+
+#### Implementación de DFS
+
+<!-- livebook:{"break_markdown":true} -->
+
+-> Se asegura de que no se visiten nodos repetidos
+
+-> Solo se acumula el camino una vez encontrado
+
+-> Rechaza caminos inválidos antes de agregarlos
+
+```elixir
+defmodule DFS do
+  def buscar(grid) do
+    {inicio, fin} = buscar_puntos(grid)
+    dfs([inicio], MapSet.new(), grid, fin)
+  end
+
+  defp dfs([], _visitados, _grid, _fin), do: nil
+
+  defp dfs([actual | resto], visitados, grid, fin) when actual == fin, do: [actual]
+
+  defp dfs([actual | resto], visitados, grid, fin) do
+    if MapSet.member?(visitados, actual) do
+      dfs(resto, visitados, grid, fin)
+    else
+      visitados = MapSet.put(visitados, actual)
+
+      vecinos =
+        Grid.vecinos(actual, grid)
+        |> Enum.reject(&MapSet.member?(visitados, &1))
+
+      case dfs(vecinos ++ resto, visitados, grid, fin) do
+        nil -> dfs(resto, visitados, grid, fin)
+        camino -> [actual | camino]
+      end
+    end
+  end
+
+  defp buscar_puntos(grid) do
+    Enum.with_index(grid)
+    |> Enum.flat_map(fn {fila, i} ->
+      Enum.with_index(fila)
+      |> Enum.filter(fn {val, _} -> val in [:s, :f] end)
+      |> Enum.map(fn {_, j} -> {{i, j}, Enum.at(fila, j)} end)
+    end)
+    |> Enum.reduce({nil, nil}, fn
+      {pos, :s}, {_, fin} -> {pos, fin}
+      {pos, :f}, {inicio, _} -> {inicio, pos}
+    end)
+  end
+end
+
+```
+
+#### Probar DFS
+
+```elixir
+camino = DFS.buscar(mapa)
+```
+
+#### Visualización con Kino
+
+````elixir
+defmodule Visual do
+  def render(grid, camino) do
+    Kino.Frame.new()
+    |> tap(&Kino.render/1)
+    |> animate(grid, camino)
+  end
+
+  defp animate(frame, grid, []), do: :ok
+
+  defp animate(frame, grid, [pos | resto]) do
+    grid_animado = actualizar(grid, pos)
+    Kino.Frame.render(frame, mostrar(grid_animado))
+    Process.sleep(800)
+    animate(frame, grid_animado, resto)
+  end
+
+  defp actualizar(grid, {x, y}) do
+    List.update_at(grid, x, fn fila ->
+      List.update_at(fila, y, fn
+        :s -> :s
+        :f -> :f
+        _ -> :n
+      end)
+    end)
+  end
+
+def mostrar(grid) do
+    output =
+      grid
+      |> Enum.map(fn fila ->
+        fila
+        |> Enum.map(&to_emoji/1)
+        |> Enum.join(" ")
+      end)
+      |> Enum.join("\n")
+
+    Kino.Markdown.new("""
+    ```
+    #{output}
+    ```
+    """)
+  end
+
+  defp to_emoji(:s), do: "🟢"
+  defp to_emoji(:f), do: "🏁"
+  defp to_emoji(:p), do: "🟥"
+  defp to_emoji(:_), do: "⬜"
+  defp to_emoji(:n), do: "🟦"
+  defp to_emoji(_),  do: "❓"
+  
+end
+
+# Visualizar el camino paso a paso
+Visual.render(mapa, camino)
+
+````
+
+#### Implementación de DFS
+
+```elixir
+defmodule BFS do
+  def buscar(grid) do
+    {inicio, fin} = buscar_puntos(grid)
+    buscar_camino([{inicio, [inicio]}], MapSet.new(), grid, fin)
+  end
+
+  defp buscar_camino([], _visitados, _grid, _fin), do: nil
+
+  defp buscar_camino([{pos, camino} | cola], visitados, grid, fin) do
+    if pos == fin do
+      camino
+    else
+      visitados = MapSet.put(visitados, pos)
+
+      nuevos =
+        Grid.vecinos(pos, grid)
+        |> Enum.reject(&MapSet.member?(visitados, &1))
+        |> Enum.map(&{&1, camino ++ [&1]})
+
+      buscar_camino(cola ++ nuevos, visitados, grid, fin)
+    end
+  end
+
+  defp buscar_puntos(grid) do
+    Enum.with_index(grid)
+    |> Enum.flat_map(fn {fila, i} ->
+      Enum.with_index(fila)
+      |> Enum.filter(fn {val, _} -> val in [:s, :f] end)
+      |> Enum.map(fn {_, j} -> {{i, j}, Enum.at(fila, j)} end)
+    end)
+    |> Enum.reduce({nil, nil}, fn
+      {pos, :s}, {_, fin} -> {pos, fin}
+      {pos, :f}, {inicio, _} -> {inicio, pos}
+    end)
+  end
+end
+```
+
+```elixir
+camino = BFS.buscar(mapa)
+Visual.render(mapa, camino)
+
+```
+
+#### Diferencias respecto a DFS
+
+DFS tiende a ir por un camino hasta el fondo y luego retrocede si no encuentra el final.
+
+BFS explora primero todo lo cercano antes de ir más lejos. Por eso, BFS siempre encuentra el camino más corto si todos los pasos tienen el mismo costo.
+
+Con este enfoque, ninguna celda blanca debería pintarse de azul salvo las que forman parte del camino ganador.
